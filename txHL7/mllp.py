@@ -5,6 +5,8 @@ from twisted.protocols.policies import TimeoutMixin
 from zope.interface.verify import verifyObject
 import six
 
+from hl7 import Message
+
 from txHL7.receiver import IHL7Receiver
 
 
