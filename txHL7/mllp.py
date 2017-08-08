@@ -40,7 +40,10 @@ class MinimalLowerLayerProtocol(protocol.Protocol, TimeoutMixin):
         messages = (self._buffer + data).split(self.end_block)
         # whatever is in the last chunk is an uncompleted message, so put back
         # into the buffer
-        self._buffer = messages.pop(-1)
+
+        # MODIFIED BY EDDIEP -- list length should be > 1 if end_block exists
+        if len(messages) > 1:
+            self._buffer = messages.pop(-1)
 
         for raw_message in messages:
             # strip the rest of the MLLP shell from the HL7 message
@@ -51,7 +54,8 @@ class MinimalLowerLayerProtocol(protocol.Protocol, TimeoutMixin):
                 # convert into unicode, parseMessage expects decoded string
                 raw_message = self.factory.decode(raw_message)
 
-                message_container = self.factory.parseMessage(raw_message)
+                # MODIFIED BY EDDIEP -- add IP address as params
+                message_container = self.factory.parseMessage(raw_message, self.transport.getPeer().host)
 
                 # error callback (defined here, since error depends on
                 # current message).  rejects the message
@@ -62,19 +66,35 @@ class MinimalLowerLayerProtocol(protocol.Protocol, TimeoutMixin):
 
                 # have the factory create a deferred and pass the message
                 # to the approriate IHL7Receiver instance
-                d = self.factory.handleMessage(message_container)
-                d.addCallback(onSuccess)
-                d.addErrback(onError)
+                if message_container:
+                    d = self.factory.handleMessage(message_container)
+                    d.addCallback(onSuccess)
+                    d.addErrback(onError)
 
     def writeMessage(self, message):
         if message is None:
             return
-        # convert back to a byte string
-        message = self.factory.encode(message)
-        # wrap message in payload container
-        self.transport.write(
-            self.start_block + message + self.end_block + self.carriage_return
-        )
+
+        if not isinstance(message, list):
+            messages = [message]
+
+        else:
+            messages = message
+
+        for this_message in messages:
+            # convert Message type to unicode first
+            if isinstance(this_message, Message):
+                this_message = unicode(this_message)
+
+            # convert back to a byte string
+            this_message = self.factory.encode(this_message)
+
+            print 'writeMessage: [%r]' % this_message
+
+            # wrap message in payload container
+            self.transport.write(
+                self.start_block + this_message + self.end_block + self.carriage_return
+                )
 
 
 class MLLPFactory(protocol.ServerFactory):
@@ -89,11 +109,11 @@ class MLLPFactory(protocol.ServerFactory):
         else:
             encoding_errors = None
         self.encoding = encoding or sys.getdefaultencoding()
-        self.encoding_errors = encoding_errors or 'strict'
+        self.encoding_errors = encoding_errors or 'ignore'
         self.timeout = receiver.getTimeout()
 
-    def parseMessage(self, message_str):
-        return self.receiver.parseMessage(message_str)
+    def parseMessage(self, message_str, from_host_ip=None):
+        return self.receiver.parseMessage(message_str, from_host_ip)
 
     def handleMessage(self, message_container):
         # IHL7Receiver allows implementations to return a Deferred or the
@@ -102,12 +122,19 @@ class MLLPFactory(protocol.ServerFactory):
 
     def decode(self, value):
         # turn value into unicode using the receiver's declared codec
+        encoding = self.receiver.getCodec()[0] or self.encoding
+        encoding_errors = self.receiver.getCodec()[1] or self.encoding_errors
+
         if isinstance(value, six.binary_type):
-            return value.decode(self.encoding, self.encoding_errors)
+            return value.decode(encoding, encoding_errors)
         return six.text_type(value)
 
     def encode(self, value):
         # turn value into byte string using the receiver's declared codec
+        encoding = self.receiver.getCodec()[0] or self.encoding
+        encoding_errors = self.receiver.getCodec()[1] or self.encoding_errors
+
         if isinstance(value, six.text_type):
-            return value.encode(self.encoding, self.encoding_errors)
+            return value.encode(encoding, encoding_errors)
         return value
+
